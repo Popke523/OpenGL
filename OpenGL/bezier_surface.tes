@@ -1,0 +1,105 @@
+// tessellation evaluation shader
+#version 460 core
+
+layout (quads, equal_spacing, ccw) in;
+
+uniform int uDegree;
+uniform int vDegree;
+
+uniform mat4 model;           // the model matrix
+uniform mat4 view;            // the view matrix
+uniform mat4 projection;      // the projection matrix
+
+out PVA
+{
+	vec3 ecPosition;
+	vec3 ecUnitNormal;
+} pvaOut;
+
+out vec3 fragPos;
+
+// index into C as: "n Choose i" = C[n][i] // n is the degree of the curve
+float C[5][5] = float[][](
+    float[](0.0,         0.0, 0.0, 0.0, 0.0),
+    float[](1.0, 1.0,         0.0, 0.0, 0.0),
+    float[](1.0, 2.0, 1.0,         0.0, 0.0),
+    float[](1.0, 3.0, 3.0, 1.0,         0.0),
+    float[](1.0, 4.0, 6.0, 4.0, 1.0)
+);
+
+float toIntegerPower(float b, int n)
+{
+	float ret = 1.0;
+	for (int i=0 ; i<n ; i++)
+		ret *= b;
+	return ret;
+}
+
+// Compute and return the i-th Bernstein polynomial of degree n at t:
+float B(int i, int n, float t)
+{
+	return C[n][i] * toIntegerPower(t, i) * toIntegerPower(1.0-t, n-i);
+}
+
+// The following computes and returns the index in a control point
+// array of the control point in the indicated row and column.
+int loc(in int rowDegree, in int row, in int col)
+{
+	return (row * (rowDegree + 1)) + col;
+}
+
+vec3 evaluatePartial(int n, float t, int otherDeg, float otherParam, bool orderIs_ij)
+{
+	vec3 partial = vec3(0.0);
+	for (int i=0 ; i<=n ; i++)
+	{
+		float partialOfBi_first = 0.0;
+		float partialOfBi_last = 0.0;
+		if (i > 0)
+			partialOfBi_first = B(i-1, n-1, t);
+		if (i < n)
+			partialOfBi_last = B(i, n-1, t);
+		float partialOfBi = n * (partialOfBi_first - partialOfBi_last);
+		for (int j=0 ; j<=otherDeg ; j++)
+		{
+			int index = orderIs_ij ? loc(n, j, i) : loc(otherDeg, i, j);
+			vec4 pnt = gl_in[index].gl_Position;
+			partial += partialOfBi * B(j, otherDeg, otherParam) * pnt.xyz/pnt.w;
+		}
+	}
+	return partial;
+}
+
+vec3 evaluateNormalAtPointOnSurface(int uDeg, int vDeg, float u, float v)
+{
+	// We use the recurrence relation for partial derivatives to compute first
+	// the partial in the u direction, then the partial in the v direction.
+	vec3 partialInU = evaluatePartial(uDeg, u, vDeg, v, true);
+	vec3 partialInV = evaluatePartial(vDeg, v, uDeg, u, false);
+	return cross(partialInU, partialInV);
+}
+
+vec4 evaluatePointOnSurface(int uDeg, int vDeg, float u, float v)
+{
+	vec4 sum = vec4(0.0);
+	for (int i=0 ; i<=uDeg ; i++)
+	{
+		for (int j=0 ; j<=vDeg ; j++)
+		{
+			sum += B(i, uDeg, u) * B(j, vDeg, v) * gl_in[loc(uDeg, j, i)].gl_Position;
+		}
+	}
+	return sum;
+}
+
+void main()
+{
+	float u = gl_TessCoord[0];
+	float v = gl_TessCoord[1];
+
+	vec4 pos = evaluatePointOnSurface(uDegree, vDegree, u, v);
+	pvaOut.ecPosition = pos.xyz / pos.w;
+	pvaOut.ecUnitNormal = normalize(mat3(transpose(inverse(model))) * evaluateNormalAtPointOnSurface(uDegree, vDegree, u, v));
+	fragPos = (mat4(model) * pos).xyz;
+	gl_Position = projection * view * model * pos;
+}
